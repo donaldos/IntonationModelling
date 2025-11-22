@@ -20,6 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 import matplotlib.pyplot as plt
+import sys
 
 # =========================
 # 설정값
@@ -28,7 +29,7 @@ CSV_FILE_NAME = "intonationpattern.csv"   # <-- 여기에 실제 csv 파일 이�
 BATCH_SIZE = 32
 NUM_EPOCHS = 400
 LEARNING_RATE = 1e-3
-TEST_SIZE = 0.2
+TEST_SIZE = 0.1
 RANDOM_STATE = 42
 MODEL_SAVE_PATH = "./mlp_model/pitch_pattern_model.pt"
 ENCODER_SAVE_PATH = "./mlp_model/label_encoder.pkl"
@@ -78,7 +79,7 @@ def load_and_preprocess(csv_path: str) -> Tuple[np.ndarray, np.ndarray,
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    return X_train_scaled, X_test_scaled, y_train, y_test, label_encoder, scaler
+    return X_train_scaled, X_test_scaled, y_train, y_test, label_encoder, scaler    
 
 
 # =========================
@@ -171,20 +172,40 @@ class IntonationClassifier(nn.Module):
 # =========================
 # 학습 & 평가 루프
 # =========================
-
 def train_one_epoch(model, loader, criterion, optimizer, device):
+    """
+    train_one_epoch() 함수는 DataLoader로부터 batch 단위 데이터를 받아
+    forward → loss 계산 → backward → optimizer 업데이트
+    """
+
+    # 훈련 시 배치마다 달라져야 하는 레이어(Dropout, BatchNorm)를 제대로 작동시키는 필수 호출
+    # 하지않으면, 
+    # - Dropout이 꺼져서 더 이상 regularization이 되지 않음
+    # - BatchNorm이 running_mean / running_var (평가용 값)만 사용해 학습이 망가짐
+    # - Gradient 계산도 잘못될 수 있음
     model.train()
+    
     running_loss = 0.0
 
+    # dataloader 생성시, BATCH_SIZE 정의
     for X_batch, y_batch in loader:
         X_batch = X_batch.to(device)
         y_batch = y_batch.to(device)
 
+        # 반드시 backward 전에 호출해야 함.
+        # PyTorch는 gradient를 누적시키므로,
+        # 초기화 안 하면 여러 batch의 gradient가 섞여버림 → 오작동.
         optimizer.zero_grad()
-        outputs = model(X_batch)           # (batch, num_classes)
-        loss = criterion(outputs, y_batch)
-        loss.backward()
-        optimizer.step()
+
+        # forward 계산
+        outputs = model(X_batch)            # (batch, num_classes)
+        # loss 계산
+        loss = criterion(outputs, y_batch)  # 정의된 손실함수
+
+        # 출력에서 손실을 기준으로 모든 파라미터에 대해 ∂Loss/∂W 를 자동 계산(Autograd)
+        loss.backward()     
+        # 계산된 gradient로 실제 파라미터 업데이트(학습)                
+        optimizer.step()                    
 
         running_loss += loss.item()
 
@@ -192,7 +213,11 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 
 
 def evaluate(model, loader, device):
+    # Dropout OFF
+    # BatchNorm 평가모드(fixed running mean/var 사용)
+    # 실수 예측의 안정성 보장
     model.eval()
+    
     correct = 0
     total = 0
 
@@ -240,26 +265,33 @@ def predict_pattern(model, scaler, label_encoder, pitch_vector_128, device):
 
 def main():
     # 1) 데이터 로딩 & 전처리
-    csv_file_path = f"{os.getcwd()}/input/{CSV_FILE_NAME}"
+    csv_file_path = f"/Users/donaldos/workspace/autointonation/IntonationModelling/input/{CSV_FILE_NAME}"
     print(f"Loading data from {csv_file_path} ...")
     X_train, X_test, y_train, y_test, label_encoder, scaler = load_and_preprocess(csv_file_path)
 
+    # X_train.shape = (4791, 128) 
+    # 이 중 입력차원은 128, X_train.shape[0]은 데이터의 갯수
     input_dim = X_train.shape[1]
+    # LLL ~ HHH  중 나타난 것이 약 20개 (즉 7개는 빈도 차이로 drop 시켰음)
     num_classes = len(label_encoder.classes_)
     print(f"Input dim: {input_dim}, Num classes: {num_classes}")
 
+
     # 2) Dataset / DataLoader
-    train_dataset = IntonationDataset(X_train, y_train, reshape_seq=False, device="cpu")
-    test_dataset = IntonationDataset(X_test, y_test, reshape_seq=False, device="cpu")
+    # - numpy.ndarray --> tensor
+    train_dataset = IntonationDataset(X_train, y_train, reshape_seq=False, device="mps")
+    test_dataset = IntonationDataset(X_test, y_test, reshape_seq=False, device="mps")
+    
+    
 
     # batch_size는 한번에 훈련할때, 몇개의 샘플을 동시에 집어 넣을지 정의
     # - 모든데이터를 한번에 처리는 불가능하기 때문에 GPU/CPU 상황에 맞게 올릴 수 있는 단위로 나누는것
     # - 학습 안정성 개선: 균현잡힌 gradient (작은 데이터는 불안정, 큰 데이터는 학습이 느려짐)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     # 3) 모델 / 손실함수 / 옵티마이저
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     print("Using device:", device)
 
     plt.ion()  # interactive mode 켜기
@@ -268,18 +300,25 @@ def main():
     train_losses = []
     test_accuracies = []
 
-    model = IntonationClassifier_01(input_dim=input_dim, num_classes=num_classes).to(device)
+    # 모델 설정
+    model = IntonationClassifier(input_dim=input_dim, num_classes=num_classes).to(device)
+    # 손실함수 정의-교차엔트로피손실: 분류의 문제에서 모델의 출력과 실제 정답 레이블간의 오차를 계산
     criterion = nn.CrossEntropyLoss()
+    # 최적화 알고리즘 선정 
+    # - "**model**에 포함된 모든 학습 가능한 가중치들을 **LEARNING_RATE**로 시작하는 Adam 최적화 알고리즘을 사용하여 **업데이트(학습)**하겠다."
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     # 4) 학습 루프
     best_test_acc = 0.0
 
+    # epoch별 train
     for epoch in range(1, NUM_EPOCHS + 1):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
         test_acc = evaluate(model, test_loader, device)
+        
         train_losses.append(train_loss)
         test_accuracies.append(test_acc)
+        
         if test_acc > best_test_acc:
             best_test_acc = test_acc
 
