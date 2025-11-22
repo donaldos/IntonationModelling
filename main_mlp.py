@@ -30,9 +30,9 @@ NUM_EPOCHS = 400
 LEARNING_RATE = 1e-3
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
-MODEL_SAVE_PATH = "pitch_pattern_model.pt"
-ENCODER_SAVE_PATH = "label_encoder.pkl"
-SCALER_SAVE_PATH = "scaler.pkl"
+MODEL_SAVE_PATH = "./mlp_model/pitch_pattern_model.pt"
+ENCODER_SAVE_PATH = "./mlp_model/label_encoder.pkl"
+SCALER_SAVE_PATH = "./mlp_model/scaler.pkl"
 
 
 # =========================
@@ -70,7 +70,7 @@ def load_and_preprocess(csv_path: str) -> Tuple[np.ndarray, np.ndarray,
 
     # train / test split
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE#, stratify=y
     )
 
     # feature 스케일링 (평균 0, 분산 1)
@@ -95,7 +95,7 @@ class IntonationDataset(Dataset):
     
     def __init__(self, X: np.ndarray, y: np.ndarray, 
                  reshape_seq: bool = False, 
-                 device: str = 'mps'):
+                 device: str = 'cpu'):
         
         # numpy → tensor 변환
         self.X = torch.tensor(X, dtype=torch.float32)
@@ -249,8 +249,8 @@ def main():
     print(f"Input dim: {input_dim}, Num classes: {num_classes}")
 
     # 2) Dataset / DataLoader
-    train_dataset = IntonationDataset(X_train, y_train, reshape_seq=False, device="mps")
-    test_dataset = IntonationDataset(X_test, y_test, reshape_seq=False, device="mps")
+    train_dataset = IntonationDataset(X_train, y_train, reshape_seq=False, device="cpu")
+    test_dataset = IntonationDataset(X_test, y_test, reshape_seq=False, device="cpu")
 
     # batch_size는 한번에 훈련할때, 몇개의 샘플을 동시에 집어 넣을지 정의
     # - 모든데이터를 한번에 처리는 불가능하기 때문에 GPU/CPU 상황에 맞게 올릴 수 있는 단위로 나누는것
@@ -259,7 +259,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     # 3) 모델 / 손실함수 / 옵티마이저
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
     plt.ion()  # interactive mode 켜기
@@ -311,7 +311,6 @@ def main():
         pickle.dump(label_encoder, f)
     with open(SCALER_SAVE_PATH, "wb") as f:
         pickle.dump(scaler, f)
-
     print(f"Model saved to   : {MODEL_SAVE_PATH}")
     print(f"LabelEncoder saved to: {ENCODER_SAVE_PATH}")
     print(f"Scaler saved to      : {SCALER_SAVE_PATH}")
